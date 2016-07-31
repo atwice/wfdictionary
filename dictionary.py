@@ -44,23 +44,10 @@ class DicNode:
 		return self.data is not None
 
 
-	def safe_attr(self):
-		return self.data if self.data is not None else DicNode.NotLeaf
-
-
 	def __eq__(self, other):
-		if self.hash != other.hash:
-			return False
-		if self.data != other.data:
-			return False
-		if len( self.keys ) != len( other.keys ):
-			return False
-		for i in range( len( self.keys ) ):
-			if self.keys[i] != other.keys[i]:
-				return False
-			if self.children[i] != other.children[i]:
-				return False
-		return True
+		return self.data == other.data and \
+			self.keys == other.keys and \
+			self.children == other.children
 
 
 	def __hash__(self):
@@ -68,12 +55,14 @@ class DicNode:
 			return self.hash
 
 		h = 0
-		h = add_to_hash( h, len( self.keys ) )
-		h = add_to_hash( h, self.safe_attr() )
+		l = len( self.keys )
+		h = add_to_hash( h, l )
+		h = add_to_hash( h, self.data if self.data is not None else DicNode.NotLeaf )
 		
-		for i in range( len( self.keys ) ):
-			h = add_to_hash( h, ord( self.keys[i] ) )
-			h = add_to_hash( h, hash( self.children[i] ) )
+		while l > 0:
+			l -= 1
+			h = add_to_hash( h, ord( self.keys[l] ) )
+			h = add_to_hash( h, hash( self.children[l] ) )
 
 		self.hash = h
 		return self.hash
