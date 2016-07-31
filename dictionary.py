@@ -44,10 +44,16 @@ class DicNode:
 		return self.data is not None
 
 
+	def safe_attr(self):
+		return self.data if self.data is not None else DicNode.NotLeaf
+
+
 	def __eq__(self, other):
-		if len( self.keys ) != len( other.keys ):
+		if self.hash != other.hash:
 			return False
 		if self.data != other.data:
+			return False
+		if len( self.keys ) != len( other.keys ):
 			return False
 		for i in range( len( self.keys ) ):
 			if self.keys[i] != other.keys[i]:
@@ -63,7 +69,7 @@ class DicNode:
 
 		h = 0
 		h = add_to_hash( h, len( self.keys ) )
-		h = add_to_hash( h, self.data )
+		h = add_to_hash( h, self.safe_attr() )
 		
 		for i in range( len( self.keys ) ):
 			h = add_to_hash( h, ord( self.keys[i] ) )
@@ -77,8 +83,9 @@ class DicNode:
 
 class DicSerializer:
 
-	Magic = b'WFTREE'
-	HeaderSize = len( Magic ) + 2
+	MagicTree = b'WFTREE'
+	MagicDawg = b'WFDAWG'
+	HeaderSize = len( MagicTree ) + 2
 
 	def __init__(self, v = 0):
 		self.init_version( v )
@@ -99,9 +106,19 @@ class DicSerializer:
 		self.cell_size_bytes = self.letter_bytes + self.offset_bytes
 
 
+	def serialize_dawg(self, dic_dawg):
+		# magic
+		self.data = bytearray( DicSerializer.MagicDawg )
+		# version
+		self.data.extend( self.version.to_bytes( 2, byteorder='little'))
+		# tree
+		self.serialize_node( dic_dawg.root )
+		return self.data
+
+
 	def serialize_tree(self, dic_tree):
 		# magic
-		self.data = bytearray( DicSerializer.Magic )
+		self.data = bytearray( DicSerializer.MagicTree )
 		# version
 		self.data.extend( self.version.to_bytes( 2, byteorder='little'))
 		# tree
@@ -109,23 +126,25 @@ class DicSerializer:
 		return self.data
 
 
-	def deserialize_tree(self, data):
-		# magic
-		magic = data[0:len(DicSerializer.Magic)]
-		if magic != DicSerializer.Magic:
-			raise ValueError( "Failed to check magic: " + str( magic ) )
-		# version
-		v_offset = len(DicSerializer.Magic)
-		v = int.from_bytes( data[v_offset: v_offset + 2], byteorder='little' )
-		self.init_version( v )
-		# tree
-		tree = DicTree()
+	def deserialize(self, data):
 		self.data = data
-		self.deserialize_node(tree.root, DicSerializer.HeaderSize)
-		return tree
+		self.dawg_deserialization_cache = dict()
+		magic = data[0:len(DicSerializer.MagicTree)]
+		if magic == DicSerializer.MagicTree:
+			root = self.deserialize_node(DicSerializer.HeaderSize, False)
+			return DicTree( root )
+		elif magic == DicSerializer.MagicDawg:
+			root = self.deserialize_node(DicSerializer.HeaderSize, True)
+			return DicDawg( root )
+		else:
+			raise ValueError( "Unknown magic: " + str( magic ) )
 
 
 	def serialize_node(self, node):
+		# поддержка DAWG
+		if hasattr( node, "_serialization_offset" ):
+			return node._serialization_offset
+
 		# сохраняем текущее смещение - начало записи об этом узле
 		offset = len(self.data)
 		
@@ -148,10 +167,18 @@ class DicSerializer:
 			self.write_key( cell_offset, node.keys[i])
 			self.write_int( cell_offset + self.letter_bytes, child_offset, self.offset_bytes )
 
+		node._serialization_offset = offset
 		return offset
 
 
-	def deserialize_node(self, node, offset = 0):
+	def deserialize_node(self, offset, is_dawg):
+		if is_dawg:
+			# имеет смысл поискать в кэше
+			node = self.dawg_deserialization_cache.get( offset, None )
+			if node is not None:
+				return node
+		
+		node = DicNode()
 		children_count = self.read_int( offset, self.child_count_bytes )
 		node_data = self.read_int( offset + self.child_count_bytes, self.attr_bytes )
 		node.data = node_data if node_data != DicNode.NotLeaf else None
@@ -162,9 +189,13 @@ class DicSerializer:
 			node.keys.append( self.read_key( cell_offset ) )
 			
 			child_offset = self.read_int( cell_offset + self.letter_bytes, self.offset_bytes )
-			child = DicNode()
-			self.deserialize_node( child, child_offset )
+			child = self.deserialize_node( child_offset, is_dawg )
 			node.children.append( child )
+		
+		if is_dawg:
+			self.dawg_deserialization_cache[offset] = node
+
+		return node
 
 
 	def write_int(self, where, what, size):
@@ -185,8 +216,9 @@ class DicSerializer:
 
 class DicTree:
 
-	def __init__(self):
-		self.root = DicNode()
+	def __init__(self, root = None):
+		self.root = root if (root is not None) else DicNode()
+
 
 	def add_word(self, word, attr = DicNode.EmptyLeaf):
 		assert word is not None and word != ""
@@ -213,15 +245,15 @@ class DicTree:
 
 	def deserialize(self, data):
 		s = DicSerializer()
-		tree = s.deserialize_tree( data )
+		tree = s.deserialize( data )
 		self.root = tree.root
 
 ####################################################################################################
 
 class DicDawg:
 
-	def __init__(self):
-		self.root = DicNode()
+	def __init__(self, root = None):
+		self.root = root if (root is not None) else DicNode()
 
 	def check_word(self, word):
 		curr_node = self.root
@@ -232,6 +264,16 @@ class DicDawg:
 				return False
 
 		return curr_node.is_leaf()
+
+	def serialize(self):
+		s = DicSerializer()
+		return s.serialize_dawg( self )
+
+	def deserialize(self, data):
+		s = DicSerializer()
+		dawg = s.deserialize(data)
+		self.root = dawg.root
+
 
 ####################################################################################################
 
@@ -247,24 +289,25 @@ class DicDawgBuilder:
 
 
 	def minimize_node(self, node):
-		nodes_hash_table = self.nodes_hash_table
+		hash_table = self.nodes_hash_table
 
 		for i, child in enumerate( node.children ):
-			node.children[i] = child.minimize( nodes_hash_table )
+			node.children[i] = self.minimize_node( child )
 
 		h = hash( node )
-		if h not in nodes_hash_table:
-			nodes_hash_table[h] = node
+		if h not in hash_table:
+			hash_table[h] = [node]
 		else:
-			for n in nodes_hash_table[h]:
+			for n in hash_table[h]:
 				if node == n:
 					return n
-			nodes_hash_table[h].append( node )
+			hash_table[h].append( node )
 		return node
 
 
 	def build(self):
-		self.minimize( self.tree.root )
+		self.minimize_node( self.tree.root )
+		return DicDawg( self.tree.root )
 
 
 ####################################################################################################
@@ -280,6 +323,10 @@ class TestEmptyDictionary(unittest.TestCase):
 		self.assertFalse(self.dictionary.check_word("any word"))
 		self.assertFalse(self.dictionary.check_word("a"))
 		self.assertFalse(self.dictionary.check_word(" "))
+
+
+###
+
 
 class TestDictionary(unittest.TestCase):
 
@@ -307,6 +354,10 @@ class TestDictionary(unittest.TestCase):
 		self.assertFalse(dic.check_word("anyo"))
 		self.assertFalse(dic.check_word("anyon"))
 
+
+###
+
+
 class TestDictionarySerialization(unittest.TestCase):
 
 	def test_empty(self):
@@ -314,7 +365,7 @@ class TestDictionarySerialization(unittest.TestCase):
 		data = dic.serialize()
 		# print( data )
 		self.assertEqual( len(data), DicSerializer.HeaderSize + 4 + 4 )
-		self.assertEqual( data, b'PRFXTR\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff' )
+		self.assertEqual( data, b'WFTREE\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff' )
 
 
 	def test_one_letter(self):
@@ -324,7 +375,7 @@ class TestDictionarySerialization(unittest.TestCase):
 		# print( data )
 		self.assertEqual( len( data ), DicSerializer.HeaderSize + (4 + 4 + 1*(4 + 4)) + (4 + 4) )
 		self.assertEqual( data,
-			b'PRFXTR\x00\x00\x01\x00\x00\x00\xff\xff\xff\xff\x61\x00\x00\x00\x18\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' )
+			b'WFTREE\x00\x00\x01\x00\x00\x00\xff\xff\xff\xff\x61\x00\x00\x00\x18\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' )
 		# 01000000 ffffffff 61000000 08000000 00000000 00000000
 		# ^^^^^^^^ - количество детей root
 		#           ^^^^^^^^ - атрибуты root (NotLeaf)
@@ -355,6 +406,74 @@ class TestDictionarySerialization(unittest.TestCase):
 		dic2.deserialize( data )
 		self.assertTrue( dic2.check_word( "anyone" ) )
 		self.assertFalse( dic2.check_word( "any" ) )
+
+
+###
+
+
+class TestDawg(unittest.TestCase):
+	def setUp(self):
+		builder = DicDawgBuilder()
+		builder.add_word( "anyone" )
+		builder.add_word( "anywhere" )
+		builder.add_word( "any" )
+		builder.add_word( "someone" )
+		builder.add_word( "somewhere" )
+		self.builder = builder
+
+	def test_empty(self):
+		dic = DicDawg()
+		data = dic.serialize()
+		# print( data )
+		self.assertEqual( len(data), DicSerializer.HeaderSize + 4 + 4 )
+		self.assertEqual( data, b'WFDAWG\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff' )
+
+	def test_one_final(self):
+		tree = DicTree()
+		tree.add_word( "a" )
+		tree.add_word( "b" )
+		tree_data = tree.serialize()
+		
+		builder = DicDawgBuilder()
+		builder.add_word( "a" )
+		builder.add_word( "b" )
+		dawg = builder.build()
+		dawg_data = dawg.serialize()
+
+		self.assertLess( len( dawg_data ), len( tree_data ) )
+
+	def test_words(self):
+		dawg = self.builder.build()
+		
+		self.assertTrue( dawg.check_word("anyone") )
+		self.assertTrue( dawg.check_word("anywhere") )
+		self.assertTrue( dawg.check_word("any") )
+		self.assertTrue( dawg.check_word("someone") )
+		self.assertTrue( dawg.check_word("somewhere") )
+		self.assertFalse( dawg.check_word("some") )
+		self.assertFalse( dawg.check_word("a") )
+		self.assertFalse( dawg.check_word("an") )
+		self.assertFalse( dawg.check_word("anyo") )
+		self.assertFalse( dawg.check_word("anyon") )
+
+
+	def test_reload(self):
+		dawg = self.builder.build()
+		dawg_data = dawg.serialize()
+		dawg2 = DicDawg()
+		dawg2.deserialize( dawg_data )
+
+		self.assertTrue( dawg2.check_word("anyone") )
+		self.assertTrue( dawg2.check_word("anywhere") )
+		self.assertTrue( dawg2.check_word("any") )
+		self.assertTrue( dawg2.check_word("someone") )
+		self.assertTrue( dawg2.check_word("somewhere") )
+		self.assertFalse( dawg2.check_word("some") )
+		self.assertFalse( dawg2.check_word("a") )
+		self.assertFalse( dawg2.check_word("an") )
+		self.assertFalse( dawg2.check_word("anyo") )
+		self.assertFalse( dawg2.check_word("anyon") )
+
 
 if __name__ == "__main__":
 	unittest.main()

@@ -1,6 +1,7 @@
 ﻿import sys
 import argparse
 import dictionary
+import time
 
 DescriptionString = "Prefix Tree dictionary compiler."
 
@@ -12,21 +13,35 @@ def parse_args():
 	parser.add_argument( "-o", "--output", type=argparse.FileType( "wb" ),
 		help = "Path to output file. If not set, stdout will be used",
 		default = sys.stdout )
+	parser.add_argument( "--dawg",
+		action='store_const', const=True, default=False,
+		help = "Use DAWG(directed acyclic word graph) minimization" )
 
 	return parser.parse_args()
 
 def main():
 	args = parse_args()
 
-	dic = dictionary.DicTree()
+	collector = dictionary.DicDawgBuilder() if args.dawg else dictionary.DicTree()
 
 	for line in args.input:
 		for word in line.split():
-			dic.add_word( word )
+			collector.add_word( word )
 
-	binary = dic.serialize()
+	binary = bytes()
+
+	start = time.time()
+
+	if args.dawg:
+		binary = collector.build().serialize()
+	else:
+		binary = collector.serialize()
+
+	end = time.time()
+
+	print( "Elapsed time: ", end - start, "s" )
+
 	args.output.write( binary )
-
 
 
 if __name__ == "__main__":
