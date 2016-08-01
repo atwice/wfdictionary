@@ -1,4 +1,6 @@
-﻿import sys
+﻿#! python3
+
+import sys
 import argparse
 import dictionary
 import time
@@ -7,10 +9,12 @@ DescriptionString = "Prefix Tree dictionary compiler."
 
 def parse_args():
 	parser = argparse.ArgumentParser( prog = "compile_dictionary.py", description = DescriptionString )
-	parser.add_argument( "-i", "--input", type=argparse.FileType( "r", encoding='UTF-8' ),
+	parser.add_argument( "-i", "--input",
+		type=argparse.FileType( "r", encoding='utf16' ),
 		help = "Path to UTF-8 text file. Words delimeted by any space symbol. If not set, stdin will be used",
 		default = sys.stdin )
-	parser.add_argument( "-o", "--output", type=argparse.FileType( "wb" ),
+	parser.add_argument( "-o", "--output",
+		type=argparse.FileType( "wb" ),
 		help = "Path to output file. If not set, stdout will be used",
 		default = sys.stdout )
 	parser.add_argument( "--dawg",

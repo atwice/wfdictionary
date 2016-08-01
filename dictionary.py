@@ -1,4 +1,6 @@
-﻿import bisect
+﻿#! python3
+
+import bisect
 
 def add_to_hash( hash, to_add ):
 	return ( hash << 5 ) + hash + to_add
@@ -76,7 +78,7 @@ class DicSerializer:
 	MagicDawg = b'WFDAWG'
 	HeaderSize = len( MagicTree ) + 2
 
-	def __init__(self, v = 0):
+	def __init__(self, v = 1):
 		self.init_version( v )
 		self.data = bytearray()
 
@@ -87,6 +89,11 @@ class DicSerializer:
 			self.child_count_bytes = 4
 			self.attr_bytes = 4
 			self.letter_bytes = 4
+			self.offset_bytes = 4
+		elif v == 1:
+			self.child_count_bytes = 1
+			self.attr_bytes = 1
+			self.letter_bytes = 2
 			self.offset_bytes = 4
 		else:
 			raise ValueError( "Unknown DicSerializer version: " + v )
@@ -194,7 +201,11 @@ class DicSerializer:
 		return int.from_bytes( self.data[where : where + size], byteorder='little', signed=True )
 
 	def write_key( self, offset, letter ):
-		self.write_int(offset, ord(letter), self.letter_bytes)
+		try:
+			self.write_int(offset, ord(letter), self.letter_bytes)
+		except OverflowError as e:
+			print( "Can't save letter", ord( letter ) )
+			raise e
 
 	def read_key( self, offset ):
 		return chr( self.read_int( offset, self.letter_bytes ) )
@@ -254,9 +265,11 @@ class DicDawg:
 
 		return curr_node.is_leaf()
 
+
 	def serialize(self):
 		s = DicSerializer()
 		return s.serialize_dawg( self )
+
 
 	def deserialize(self, data):
 		s = DicSerializer()
@@ -351,7 +364,8 @@ class TestDictionarySerialization(unittest.TestCase):
 
 	def test_empty(self):
 		dic = DicTree()
-		data = dic.serialize()
+		s = DicSerializer(v=0)
+		data = s.serialize_tree(dic)
 		# print( data )
 		self.assertEqual( len(data), DicSerializer.HeaderSize + 4 + 4 )
 		self.assertEqual( data, b'WFTREE\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff' )
@@ -360,7 +374,8 @@ class TestDictionarySerialization(unittest.TestCase):
 	def test_one_letter(self):
 		dic = DicTree()
 		dic.add_word("a")
-		data = dic.serialize()
+		s = DicSerializer(v=0)
+		data = s.serialize_tree(dic)
 		# print( data )
 		self.assertEqual( len( data ), DicSerializer.HeaderSize + (4 + 4 + 1*(4 + 4)) + (4 + 4) )
 		self.assertEqual( data,
@@ -377,7 +392,8 @@ class TestDictionarySerialization(unittest.TestCase):
 	def test_one_word(self):
 		dic = DicTree()
 		dic.add_word( "hello" )
-		data = dic.serialize()
+		s = DicSerializer(v=0)
+		data = s.serialize_tree(dic)
 		# 5 букв. Каждая по:
 		# 2 байта - количество детей
 		# 2 байта - данные в листе
@@ -412,7 +428,8 @@ class TestDawg(unittest.TestCase):
 
 	def test_empty(self):
 		dic = DicDawg()
-		data = dic.serialize()
+		s = DicSerializer(v=0)
+		data = s.serialize_dawg(dic)
 		# print( data )
 		self.assertEqual( len(data), DicSerializer.HeaderSize + 4 + 4 )
 		self.assertEqual( data, b'WFDAWG\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff' )
