@@ -1,9 +1,10 @@
-﻿#! python3
+#! python3
 
 import sys
 import argparse
 import dictionary
 import time
+import io
 
 DescriptionString = "Prefix Tree dictionary compiler."
 
@@ -28,24 +29,43 @@ def main():
 
 	collector = dictionary.DicDawgBuilder() if args.dawg else dictionary.DicTree()
 
-	for line in args.input:
-		for word in line.split():
+	input = args.input
+	input.seek( 0, io.SEEK_END )
+	total_bytes = input.tell()
+	input.seek( 0, io.SEEK_SET )
+
+	start = time.time()
+
+	i = 0
+	current_bytes = 0
+
+	for line in input:
+		for word in sorted(line[:-1].split()):
 			collector.add_word( word )
+			i += 1
+			current_bytes += len( line ) * 2
+		if i > 10000:
+			print( "{:.2%}".format( current_bytes / total_bytes ), end='\r' )
+			i = 0
 
 	binary = bytes()
 
-	start = time.time()
+	build_end = time.time()
 
 	if args.dawg:
 		binary = collector.build().serialize()
 	else:
 		binary = collector.serialize()
 
-	end = time.time()
-
-	print( "Elapsed time: ", end - start, "s" )
+	serialize_end = time.time()
 
 	args.output.write( binary )
+
+	end = time.time()
+
+	print( "Building DAWG time: ", build_end - start, "s" )
+	print( "Serialization time: ", serialize_end - build_end, "s" )
+	print( "Total time: ", end - start, "s" )
 
 
 if __name__ == "__main__":
