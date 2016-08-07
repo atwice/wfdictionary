@@ -3,7 +3,7 @@
 import bisect
 
 def add_to_hash( hash, to_add ):
-	return ( hash << 5 ) + hash + to_add
+	return (( hash * 0x01000193 ) ^ to_add ) & 0xffffffff
 
 
 ####################################################################################################
@@ -35,6 +35,14 @@ class DicNode:
 		return self.children[i]
 
 
+	def replace(self, letter, child):
+		i = bisect.bisect_left(self.keys, letter)
+		if i >= len(self.keys) or self.keys[i] != letter:
+			raise Exception( "Error: child not found: " + letter + " in " + str( self.keys ) )
+		self.children[i] = child
+		self.hash = self._do_calc_hash()
+
+
 	def set_leaf(self, attr):
 		if attr is not None:
 			self.data = attr
@@ -53,10 +61,12 @@ class DicNode:
 
 
 	def __hash__(self):
-		if self.hash is not None:
-			return self.hash
+		if self.hash is None:
+			self.hash = self._do_calc_hash()
+		return self.hash
 
-		h = 0
+	def _do_calc_hash(self):
+		h = 0x01000193
 		l = len( self.keys )
 		h = add_to_hash( h, l )
 		h = add_to_hash( h, self.data if self.data is not None else DicNode.NotLeaf )
@@ -65,9 +75,7 @@ class DicNode:
 			l -= 1
 			h = add_to_hash( h, ord( self.keys[l] ) )
 			h = add_to_hash( h, hash( self.children[l] ) )
-
-		self.hash = h
-		return self.hash
+		return h
 
 
 ####################################################################################################
@@ -279,37 +287,63 @@ class DicDawg:
 
 ####################################################################################################
 
+def common_prefix_length( s1, s2 ):
+	i = 0
+	l = min( len(s1), len(s2) )
+	while (i < l) and (s1[i] == s2[i]):
+		i += 1
+	return i
+
+debug = False
+
 class DicDawgBuilder:
 
 	def __init__(self):
-		self.tree = DicTree()
-		self.nodes_hash_table = dict()
+		self.root = DicNode()
+		self.previous_word = ""
+		
+		# список последних непроверенных узлов. Всегда в порядке возрастания глубины узла
+		self.unchecked = []
+		# узлы, которые точно нужны в DAWG. 
+		self.minimized_nodes = {}
+
+	def add_word(self, word, attr = DicNode.EmptyLeaf ):
+		if word < self.previous_word:
+			raise Exception( "Error: Words must be inserted in alphabetical order: ", word, self.previous_word )
+		self._do_add_word( word, attr )
 
 
-	def add_word(self, word):
-		self.tree.add_word( word )
+	def _do_add_word(self, word, attr):
+		common_prefix = common_prefix_length( word, self.previous_word )
+		self._minimize( common_prefix )
+
+		# [2] - это индекс в кортеже (parent, letter, node)
+		node = self.unchecked[-1][2] if len(self.unchecked) > 0 else self.root
+
+		# собственно, добавляем новые узлы
+		for letter in word[common_prefix:]:
+			next_node = node.add( letter )
+			self.unchecked.append( (node, letter, next_node) )
+			node = next_node
+
+		node.set_leaf( attr )
+		self.previous_word = word
 
 
-	def minimize_node(self, node):
-		hash_table = self.nodes_hash_table
-
-		for i, child in enumerate( node.children ):
-			node.children[i] = self.minimize_node( child )
-
-		h = hash( node )
-		if h not in hash_table:
-			hash_table[h] = [node]
-		else:
-			for n in hash_table[h]:
-				if node == n:
-					return n
-			hash_table[h].append( node )
-		return node
+	def _minimize(self, depth):
+		for i in range( len(self.unchecked) - 1, depth - 1, -1 ):
+			(parent, letter, child) = self.unchecked[i]
+			
+			if child in self.minimized_nodes:
+				parent.replace( letter, self.minimized_nodes[child] )
+			else:
+				self.minimized_nodes[child] = child
+			self.unchecked.pop()
 
 
 	def build(self):
-		self.minimize_node( self.tree.root )
-		return DicDawg( self.tree.root )
+		self._minimize( 0 )
+		return DicDawg( self.root )
 
 
 ####################################################################################################
@@ -340,9 +374,9 @@ class TestDictionary(unittest.TestCase):
 
 	def test_multi_word(self):
 		dic = DicTree()
+		dic.add_word("any")
 		dic.add_word("anyone")
 		dic.add_word("anywhere")
-		dic.add_word("any")
 		dic.add_word("someone")
 		dic.add_word("somewhere")
 		self.assertTrue(dic.check_word("anyone"))
@@ -419,9 +453,9 @@ class TestDictionarySerialization(unittest.TestCase):
 class TestDawg(unittest.TestCase):
 	def setUp(self):
 		builder = DicDawgBuilder()
+		builder.add_word( "any" )
 		builder.add_word( "anyone" )
 		builder.add_word( "anywhere" )
-		builder.add_word( "any" )
 		builder.add_word( "someone" )
 		builder.add_word( "somewhere" )
 		self.builder = builder
@@ -435,6 +469,8 @@ class TestDawg(unittest.TestCase):
 		self.assertEqual( data, b'WFDAWG\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff' )
 
 	def test_one_final(self):
+		global debug
+		debug = True
 		tree = DicTree()
 		tree.add_word( "a" )
 		tree.add_word( "b" )
@@ -447,6 +483,7 @@ class TestDawg(unittest.TestCase):
 		dawg_data = dawg.serialize()
 
 		self.assertLess( len( dawg_data ), len( tree_data ) )
+		debug = False
 
 	def test_words(self):
 		dawg = self.builder.build()
@@ -479,6 +516,15 @@ class TestDawg(unittest.TestCase):
 		self.assertFalse( dawg2.check_word("an") )
 		self.assertFalse( dawg2.check_word("anyo") )
 		self.assertFalse( dawg2.check_word("anyon") )
+
+
+class TestCommonPrefix(unittest.TestCase):
+	def test_all(self):
+		self.assertEqual( common_prefix_length("","abc"), 0)
+		self.assertEqual( common_prefix_length("a","abc"), 1)
+		self.assertEqual( common_prefix_length("bac","abc"), 0)
+		self.assertEqual( common_prefix_length("abc","abc"), 3)
+		self.assertEqual( common_prefix_length("abcdef","abc"), 3)
 
 
 if __name__ == "__main__":
